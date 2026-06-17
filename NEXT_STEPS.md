@@ -1,45 +1,52 @@
-# MORPHFLIGHT — progress & next steps (v0.6.0)
+# MORPHFLIGHT — progress & next steps (v0.7.0)
 
-Snapshot of where the prototype stands and what's next. The single-file game is still
-`src/main.js`; all tuning lives in the `CFG` block at the top.
+Single-file game is still `src/main.js`; all tuning lives in the `CFG` block at the top.
 
 ## Aesthetic (note: README is STALE here)
-The README still says "ancient stone, not neon." That was **reversed** — the game is now
-**neon polygonal vectors** on a black void: solid bodies + fat neon-blue edge lines
-(`three/examples/jsm/lines` Line2). Orb = blue octagon, disks = green, enemies = pink
-wireframe. Update README when convenient.
+Neon polygonal vectors on a black void. **Consistent scheme (this version): every environment body is
+BLACK fill + bright neon edge** — the edge carries the colour. Forest keeps a collidable-(bright)-vs-
+framing-(dim) edge cue. Don't reintroduce coloured fills without asking.
 
-## Environments (swap with number keys; `P` = flythrough, no combat)
+## Environments (number keys; `P` = flythrough, no combat)
 - **[1] forest** — octagonal neon columns (in-lane collidable + wide framing).
-- **[2] stalactite** — black spikes (blue edge) from ceiling/floor + black floor/ceiling
-  with a dense blue scrolling grid.
-- **[3] channel** — vertical slot: two tall side walls + scrolling wall grids + inward teeth.
-- **[4] cave** — DONE. Tunnel of constant irregular polygon sections (4–6 sides) joined by
-  short morph transitions that draw "node vectors"; black pyramids seated flush on the walls.
-  Roundness knob = `CAVE_IRREG` (higher = jaggeder); `CAVE_MIN_EDGE`/`CAVE_MAX_ANGLE` are
-  loose guardrails (tightening them makes walls ROUNDER — counterintuitive).
-- **[5] asteroid** — SKETCH only. Tumbling low-poly rocks (icosa/dodeca/octa) drifting past.
-  Needs art pass: clustering/lanes, size distribution, maybe a debris/parallax layer.
+- **[2] stalactite** — black spikes (blue edge) from ceiling/floor + black floor/ceiling with blue grids.
+- **[3] channel** — vertical slot: side walls + scrolling grids + inward collidable teeth, plus
+  non-collidable FRAMING teeth seeded into the top/bottom margins so the slot feels infinitely tall.
+- **[4] cave** — morphing irregular-polygon tunnel + wall pyramids ("bumps").
+- **[5] asteroid** — conjoined-cube "tech debris" masses in drifting clumps; size-tiered geometry,
+  big boulders, min-floored lateral drift, far debris/parallax field. Rocks bounce off each other
+  (elastic) and off the player.
 
-Architecture: per-env `THREE.Group`s; only the active `env` updates/renders. All fat-line
-materials registered in `edgeMats[]` for resize.
+## Collision & boundary contract
+Player-vs-environment collision is wired for every env. **Contract: the env's outer shell is a SAFE
+stop; only obstacles damage.**
+- Safe boundaries: forest/asteroid lane; channel side walls (x-clamp); stalactite floor/ceiling (you
+  can fly right up to them); cave tunnel wall (pushback toward centre, no damage).
+- Damaging obstacles: columns, channel teeth, stalactites/stalagmites, cave bumps, asteroids.
+- Shared `playerHit()` with `HIT_CD` i-frames (cave/asteroid/bumps); forest/stalactite keep their
+  inline path. Knobs: `PLAYER_R`, `HIT_CD`, `CAVE_PUSH`, `AST_HIT_FACTOR`, `PLAYER_BUMP`.
+- **Bolts still pass through everything** (no bolt-vs-geometry) — deferred pending the
+  environmental-destruction design (see below).
 
-## Camera (all CFG-driven)
-Pitch tilts with vertical input + eases to neutral; idle/edge recenter via camera POSITION
-(level horizon); `CAM_MAX_OFFSET` caps how far the orb rides off-centre. Knobs: `CAM_*`.
+## Player shapes
+Orb = bright octagon + lighter halo, spins. Disks = three stacked octagons (bright core + lighter
+±`DISK_GAP` layers) spinning in-plane, mirroring the orb. Knobs: `DISK_R`, `DISK_GAP`.
 
-## Known gaps / next steps (rough priority)
-1. **Collision** — cave, channel teeth, and asteroids are VISUAL ONLY (no player collision /
-   no bolt-vs-geometry). Forest columns + stalactites collide. Wire up the rest.
-2. **Asteroid void** — promote sketch to real env (see above).
-3. **Combat depth** — enemies are easily dodged in open envs. Levers discussed: wider/denser
-   waves (done a bit via `WAVE_AIM`), consequence for ignoring, and the big one:
-4. **Scaling layer** — Vampire-Survivors-style matched-kill chain → weapon upgrades. Not started.
-5. **Modularize** `src/main.js` into modules (README task 1) — still single-file. If/when done,
-   preserve the Xbox-trigger axis detection in `readPad` (pad reports triggers on axes[3]/[4]).
-6. **Audio**, field surface detail, per-env tuning passes.
+## Next steps (rough priority)
+1. **Channel wall recessions — REDO (immediate next task).** The stylized nested-square frames were
+   tried and removed: an opaque wall occludes any geometry genuinely behind it, so they couldn't read
+   as real recesses. Next session: recess the ACTUAL wall-grid squares with real depth — likely a
+   hole-punched wall (`THREE.Shape` cutouts, or a per-cell grid of wall panels) with darker/recessed
+   panels set back behind the openings. Goal: square voids with genuine depth + a touch of colour.
+2. **Environmental destruction design** — decide what's destructible per env (consistent, meaningful,
+   fun), plus an env weapon with a cooldown and/or "materials" farming via destruction →
+   upgrades/charges/smart-bombs. Then wire bolt-vs-geometry.
+3. **Combat depth / scaling layer** (matched-kill chain → weapon upgrades) — not started.
+4. **Modularize** `src/main.js` (still single-file). Preserve the Xbox-trigger axis detection in
+   `readPad` (triggers report on axes[3]/[4]).
+5. **Audio**, per-env tuning passes.
 
 ## Running it
-`npm run dev` (Node was installed via winget; if `node` isn't on a shell's PATH, the Vite
-binary is at `node_modules/vite/bin/vite.js`). Screenshots of the live WebGL canvas time out
-in the headless preview — verify visually in a real browser.
+`npm run dev`. Screenshots of the live WebGL canvas time out in the headless preview — verify visually
+in a real browser. (requestAnimationFrame also throttles when the tab is backgrounded, so
+mode/collision only advance while the preview is foregrounded.)

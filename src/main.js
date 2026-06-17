@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 /* ============================================================
    MORPHFLIGHT — vertical-slice prototype (v5 logic)
@@ -40,6 +41,11 @@ const CFG = {
   // --- you take a hit when your orb/shape clips a column or enemy ---
   HIT_Z: 1.6,         // depth window for a body collision
   HIT_XY: 1.1,        // how close in x/y an enemy must be to clip you
+  HIT_CD: 0.8,        // i-frames (seconds) after a hit — stops multi-hit while overlapping (cave walls, asteroids)
+  PLAYER_R: 0.9,      // player collision radius vs cave walls / asteroids (0 = point collider; ~orb radius is 0.85)
+  AST_HIT_FACTOR: 0.7,// asteroid hit radius as a fraction of its bounding radius (the cube mass is tighter than the sphere)
+  PLAYER_BUMP: 40,    // impulse imparted to a rock you clip (÷ rock mass → small rocks scatter, boulders barely budge)
+  CAVE_PUSH: 0.8,     // cave wall pushback strength (× forward speed) — higher = firmer wall, less ooze-through
 
   // --- enemies ---
   WAVE_AIM: 0.4,      // how strongly each wave leans toward your altitude (1 = dead-on, 0 = always centered)
@@ -78,6 +84,8 @@ const CFG = {
   TOOTH_MIN: 1.5,     // min protrusion size
   TOOTH_RND: 3.5,     // + random size
   TOOTH_REACH: 4.5,   // how far a tooth juts inward from the wall
+  NUM_TEETH_AES: 48,  // framing protrusions seeded into the top/bottom margins — makes the slot feel infinitely tall
+  TRENCH_BAND_AES: 75,// how far up/down the framing protrusions reach (well past the play band)
 
   // --- cave (bounded: constant polygon sections joined by short morphing transitions) ---
   CAVE_RINGS: 30,     // rings in flight at once
@@ -94,12 +102,33 @@ const CFG = {
   CAVE_BUMP_RND: 1.6,   // + random
   CAVE_BUMP_H: 3.2,     // protrusion height
 
-  // --- asteroid void (sketch) ---
-  NUM_ASTEROIDS: 44,  // floating rocks
-  AST_MIN: 1.5,       // min size
-  AST_RND: 4.5,       // + random size
-  AST_X: 60,          // spread across ±this in x
-  AST_Y: 24,          // spread across ±this in y
+  // --- asteroid void: conjoined-cube "tech debris" masses ---
+  NUM_ASTEROIDS: 56,   // total rocks, divided across the clumps
+  NUM_CLUMPS: 8,       // asteroid clusters drifting through the void — the gaps between them are your lanes
+  AST_CLUMP_R: 11,     // how spread out the rocks within a clump are
+  AST_SEP: 1.1,        // spawn separation: min centre gap = this × (radii sum) — higher = fewer overlaps, bigger gaps
+  AST_SEP_TRIES: 14,   // attempts to find a non-overlapping spot before giving up
+  AST_MIN: 1.0,        // min rock size
+  AST_RND: 4.2,        // + random size (power-biased toward small)
+  AST_BOULDER_P: 0.65, // chance a clump anchors a big mass at its core (the ones you steer around)
+  AST_BOULDER: 3.2,    // boulder size multiplier
+  AST_X: 60,           // clump-centre spread in x
+  AST_Y: 26,           // clump-centre spread in y
+  AST_DRIFT: 4.5,      // max lateral drift speed — rocks slide across the frame
+  AST_DRIFT_MIN: 1.5,  // min drift speed — nothing sits perfectly still, so lane-blocking rocks always clear a gap
+  AST_SPIN: 0.8,       // base tumble rate
+  AST_SPIN_DAMP: 0.6,  // how much high drift suppresses spin (0 = independent; 1 = fast drifters barely spin)
+  AST_COLLIDE_R: 0.8,  // collision radius as fraction of bounding (lower = more visual overlap before they bounce)
+  AST_RESTITUTION: 0.85,// bounciness of rock-on-rock hits (1 = fully elastic)
+  AST_SPIN_KICK: 0.5,  // max extra tumble imparted by an impact
+  AST_CORES: 3,        // max big box cores — small chunks use fewer (complexity scales with size)
+  AST_GREEBLES: 6,     // max studded greeble cubes — small chunks use fewer/none
+  AST_OFFAXIS: 0.3,    // fraction of cubes tilted off the grid (fractured look)
+  AST_RECT: 0.35,      // fraction of cubes stretched into rectangular slabs/struts
+  AST_EDGE_W: 1.6,     // neon edge thickness for chunks (thinner than columns — lots of edges)
+  AST_VARIANTS: 10,    // distinct chunk geometries per size tier
+  NUM_DEBRIS: 340,     // far dust/debris points for parallax depth
+  AST_DEBRIS_X: 120, AST_DEBRIS_Y: 60,
 
   // --- bounds / depth ---
   LANE_X: 15, LANE_Y: 11,
@@ -139,17 +168,22 @@ const octEdges=r=>new THREE.EdgesGeometry(new THREE.CircleGeometry(r,8));
 const orbMesh=new THREE.LineSegments(octEdges(0.85),new THREE.LineBasicMaterial({color:COL.orb}));
 const orbHalo=new THREE.LineSegments(octEdges(1.15),new THREE.LineBasicMaterial({color:COL.orb,transparent:true,opacity:0.3}));
 const orbGroup=new THREE.Group(); orbGroup.add(orbMesh,orbHalo);
-// neon green disk — octagon outline, baked flat (XZ plane) so the morph rotation logic still holds
-const diskCircle=new THREE.CircleGeometry(1.35,8); diskCircle.rotateX(Math.PI/2);
-const diskLine=new THREE.LineSegments(new THREE.EdgesGeometry(diskCircle),new THREE.LineBasicMaterial({color:COL.diskh}));
-const diskGroup=new THREE.Group(); diskGroup.add(diskLine); diskGroup.visible=false;
+// neon disk — mirrors the orb's two-tone vibe in the depth axis: a bright interior octagon (flat, in the
+// XZ plane) with a lighter translucent copy 0.1 above and below. The octagon sits in XZ (normal = Y), so
+// the DISKH/DISKV morph rotation still holds; a gentle in-plane spin (diskSpin, about Y) echoes the orb.
+const DISK_R=1.35, DISK_GAP=0.1;
+const diskOct=()=>{ const g=new THREE.EdgesGeometry(new THREE.CircleGeometry(DISK_R,8)); g.rotateX(Math.PI/2); return g; };
+const mkDiskRing=(y,opacity)=>{ const m=new THREE.LineSegments(diskOct(),new THREE.LineBasicMaterial({color:COL.diskh,transparent:opacity<1,opacity})); m.position.y=y; return m; };
+const diskLines=[mkDiskRing(0,1), mkDiskRing(DISK_GAP,0.35), mkDiskRing(-DISK_GAP,0.35)]; // [bright core, lighter +0.1, lighter -0.1]
+const diskSpin=new THREE.Group(); diskSpin.add(...diskLines);
+const diskGroup=new THREE.Group(); diskGroup.add(diskSpin); diskGroup.visible=false;
 player.add(orbGroup,diskGroup);
 
 let mode=MODE.ORB,lastMode=-1;
 function applyModeVisual(){
   if(mode===lastMode)return; lastMode=mode;
   const isOrb=mode===MODE.ORB; orbGroup.visible=isOrb; diskGroup.visible=!isOrb;
-  if(!isOrb){ diskLine.material.color.setHex(MCOL[mode]);
+  if(!isOrb){ for(const d of diskLines) d.material.color.setHex(MCOL[mode]);
     if(mode===MODE.DISKH) diskGroup.rotation.set(0,0,0); else diskGroup.rotation.set(0,0,Math.PI/2); }
   playerLight.color.setHex(isOrb?0xffb070:MCOL[mode]);
   const t=document.getElementById('modeTxt'); t.textContent=NAME[mode]; t.style.color=MCSS[mode];
@@ -163,7 +197,7 @@ const edgeMats=[];  // every fat-line material, so resize can refresh their pixe
 const mkEdgeMat=hex=>{ const m=new LineMaterial({color:hex,linewidth:CFG.COL_EDGE_W,fog:true}); m.resolution.set(innerWidth,innerHeight); edgeMats.push(m); return m; };
 const colEdgeMatHit=mkEdgeMat(0x9af2ff), colEdgeMatAes=mkEdgeMat(0x4fbce8);
 const mkFillMat=hex=>new THREE.MeshBasicMaterial({color:hex,polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:1});
-const colFillMatHit=mkFillMat(0x1c5378), colFillMatAes=mkFillMat(0x0e2436);
+const colFillMatHit=mkFillMat(0x000000), colFillMatAes=mkFillMat(0x000000); // black sides everywhere (consistent scheme); the neon edge carries the colour
 const forestGroup=new THREE.Group(); scene.add(forestGroup);
 const pillars=[];
 function placePillar(p,anywhere){
@@ -231,7 +265,7 @@ let capScroll=0;
 
 /* ---------- channel (bounded env): two tall side walls forming a vertical slot, teeth jut inward ---------- */
 const trenchGroup=new THREE.Group(); trenchGroup.visible=false; scene.add(trenchGroup);
-const wallMat=new THREE.MeshBasicMaterial({color:0x0c2236,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:1});
+const wallMat=new THREE.MeshBasicMaterial({color:0x000000,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:1}); // black wall (consistent scheme); the grid + edges carry the colour
 const wallGeo=new THREE.PlaneGeometry(700,800);  // tall enough that top/bottom never frame — a slot, not a trench
 const wallGrids=[];
 for(const sx of [-1,1]){
@@ -242,7 +276,7 @@ for(const sx of [-1,1]){
 // teeth: solid neon blocks jutting inward from the walls (the things you thread)
 const toothFillGeo=new THREE.BoxGeometry(1,1,1);
 const toothLineGeo=new LineSegmentsGeometry().fromEdgesGeometry(new THREE.EdgesGeometry(toothFillGeo));
-const toothFillMat=mkFillMat(0x1c5378), toothEdgeMat=mkEdgeMat(0x9af2ff);
+const toothFillMat=mkFillMat(0x000000), toothEdgeMat=mkEdgeMat(0x9af2ff), toothEdgeMatAes=mkEdgeMat(0x4fbce8); // black body; bright edge = collidable, dim edge = framing
 const teeth=[];
 function placeTooth(t,anywhere){
   t.side=Math.random()<0.5?-1:1;
@@ -251,14 +285,17 @@ function placeTooth(t,anywhere){
   t.w=CFG.TOOTH_MIN+Math.random()*CFG.TOOTH_RND;             // length along the corridor (z)
   t.mesh.scale.set(t.reach,t.h,t.w);
   t.mesh.position.x=t.side*(CFG.TRENCH_HALF-t.reach/2);       // outer face flush to the wall
-  t.mesh.position.y=(Math.random()*2-1)*CFG.TRENCH_BAND;     // anywhere up/down the visible slot
+  t.mesh.position.y=t.aesthetic
+    ? (Math.random()<0.5?-1:1)*(CFG.TRENCH_BAND+Math.random()*(CFG.TRENCH_BAND_AES-CFG.TRENCH_BAND)) // framing: top/bottom margins → infinite feel
+    : (Math.random()*2-1)*CFG.TRENCH_BAND;                                                           // collidable: the play band
   t.mesh.position.z=anywhere?(CFG.FARZ+Math.random()*(CFG.NEARZ-CFG.FARZ)):(CFG.FARZ+Math.random()*55);
   t.mesh.visible=true;
 }
-for(let i=0;i<CFG.NUM_TEETH;i++){
+for(let i=0;i<CFG.NUM_TEETH+CFG.NUM_TEETH_AES;i++){
+  const aes=i>=CFG.NUM_TEETH;
   const fill=new THREE.Mesh(toothFillGeo,toothFillMat);
-  const line=new LineSegments2(toothLineGeo,toothEdgeMat); fill.add(line);
-  const t={mesh:fill,line:line}; trenchGroup.add(fill); placeTooth(t,true); teeth.push(t);
+  const line=new LineSegments2(toothLineGeo,aes?toothEdgeMatAes:toothEdgeMat); fill.add(line);
+  const t={mesh:fill,line:line,aesthetic:aes}; trenchGroup.add(fill); placeTooth(t,true); teeth.push(t);
 }
 let trenchScroll=0;
 
@@ -310,6 +347,16 @@ function ringPositions(track){
     for(let k=0;k<M;k++) arr.push(P[k][0]*R,P[k][1]*R,0, N[k][0]*R,N[k][1]*R,-CFG.CAVE_SPACING); }
   return arr;
 }
+// player-vs-wall helpers for the morphing cross-section (pts normalised; ×R = the world wall)
+function pointInPoly(px,py,pts,R){ let inside=false;
+  for(let i=0,j=pts.length-1;i<pts.length;j=i++){ const xi=pts[i][0]*R,yi=pts[i][1]*R,xj=pts[j][0]*R,yj=pts[j][1]*R;
+    if(((yi>py)!==(yj>py)) && (px<(xj-xi)*(py-yi)/(yj-yi)+xi)) inside=!inside; }
+  return inside; }
+function distToPoly(px,py,pts,R){ let md=Infinity;
+  for(let i=0;i<pts.length;i++){ const j=(i+1)%pts.length, ax=pts[i][0]*R,ay=pts[i][1]*R,bx=pts[j][0]*R,by=pts[j][1]*R;
+    const dx=bx-ax,dy=by-ay,L2=dx*dx+dy*dy; let t=L2>0?((px-ax)*dx+(py-ay)*dy)/L2:0; t=t<0?0:t>1?1:t;
+    const cx=ax+dx*t,cy=ay+dy*t,d=Math.hypot(px-cx,py-cy); if(d<md)md=d; }
+  return md; }
 const rings=[];
 for(let i=0;i<CFG.CAVE_RINGS;i++){
   const track=i*CFG.CAVE_SPACING, geo=new LineSegmentsGeometry(); geo.setPositions(ringPositions(track));
@@ -365,7 +412,7 @@ function placeBump(b,anywhere){
     _qB.setFromRotationMatrix(_m4); _qT.setFromAxisAngle(_yU,Math.random()*Math.PI*2);
     b.mesh.quaternion.copy(_qB).multiply(_qT);   // seat flat on the face, then random spin about the wall normal
     b.mesh.position.set(cx+nx*(h/2),cy+ny*(h/2),z);
-    b.cx=cx; b.cy=cy; b.cz=z; b.rad=rad; b.mesh.visible=true;
+    b.cx=cx; b.cy=cy; b.cz=z; b.rad=rad; b.cr=Math.hypot(rad,h*0.5); b.mesh.visible=true; // b.cr = bounding sphere (player collision)
     return;
   }
 }
@@ -375,26 +422,120 @@ for(let i=0;i<CFG.CAVE_NUM_BUMPS;i++){
   const b={mesh:fill,line,dia:py.dia}; caveGroup.add(fill); placeBump(b,true); bumps.push(b);
 }
 
-/* ---------- asteroid void (sketch env): tumbling rocks drifting past ---------- */
+/* ---------- asteroid void: conjoined-cube "tech debris" masses drifting in clumps ---------- */
 const astGroup=new THREE.Group(); astGroup.visible=false; scene.add(astGroup);
-const astFillMat=mkFillMat(0x000000), astEdgeMat=mkEdgeMat(0x6fe0ff);
-const astShapes=[new THREE.IcosahedronGeometry(1,0),new THREE.DodecahedronGeometry(1,0),new THREE.OctahedronGeometry(1,0)]
-  .map(g=>({f:g,l:new LineSegmentsGeometry().fromEdgesGeometry(new THREE.EdgesGeometry(g))}));
-const asteroids=[];
-function placeAsteroid(a,anywhere){
-  const sz=CFG.AST_MIN+Math.random()*CFG.AST_RND;
-  a.mesh.scale.set(sz*(0.7+Math.random()*0.6),sz*(0.7+Math.random()*0.6),sz*(0.7+Math.random()*0.6)); // irregular
-  a.mesh.position.set((Math.random()*2-1)*CFG.AST_X,(Math.random()*2-1)*CFG.AST_Y,
-    anywhere?(CFG.FARZ+Math.random()*(CFG.NEARZ-CFG.FARZ)):(CFG.FARZ+Math.random()*40));
+const astFillMat=mkFillMat(0x000000);
+const astEdgeMat=(()=>{ const m=new LineMaterial({color:0x6fe0ff,linewidth:CFG.AST_EDGE_W,fog:true}); m.resolution.set(innerWidth,innerHeight); edgeMats.push(m); return m; })();
+// a rock is an accretion of boxes (a few big cores + studded greebles) welded into one angular mass —
+// structural/tech debris, not a natural boulder. Complexity scales with `detail` (small rocks simpler);
+// a fraction of boxes are tilted off the grid (AST_OFFAXIS) and stretched into slabs (AST_RECT). Every
+// box is fully outlined (12 analytic edges, rotation-aware) for dense right-angle neon; black fills
+// occlude the boxes behind so it still reads solid. Pooled per size tier; instances share the geometry.
+function boxRot(b){ return new THREE.Matrix4().makeRotationX(b.rot[0]).premultiply(new THREE.Matrix4().makeRotationY(b.rot[1])).premultiply(new THREE.Matrix4().makeRotationZ(b.rot[2])); }
+function pushCubeEdges(arr,b,k){
+  const cx=b.x*k,cy=b.y*k,cz=b.z*k,hx=b.hx*k,hy=b.hy*k,hz=b.hz*k, m=b.rot?boxRot(b):null, v=new THREE.Vector3();
+  const off=[[-hx,-hy,-hz],[hx,-hy,-hz],[hx,hy,-hz],[-hx,hy,-hz],[-hx,-hy,hz],[hx,-hy,hz],[hx,hy,hz],[-hx,hy,hz]];
+  const c=off.map(o=>{ v.set(o[0],o[1],o[2]); if(m)v.applyMatrix4(m); return [cx+v.x,cy+v.y,cz+v.z]; });
+  const E=[[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
+  for(const e of E){ const a=c[e[0]],d=c[e[1]]; arr.push(a[0],a[1],a[2],d[0],d[1],d[2]); }
+}
+function pushBox(boxes,x,y,z,h){
+  let hx=h*(0.7+Math.random()*0.6),hy=h*(0.7+Math.random()*0.6),hz=h*(0.7+Math.random()*0.6);
+  if(Math.random()<CFG.AST_RECT){ const ax=(Math.random()*3)|0,f=1.6+Math.random()*1.8; if(ax===0)hx*=f; else if(ax===1)hy*=f; else hz*=f; } // elongate one axis → slab/strut
+  const rot=Math.random()<CFG.AST_OFFAXIS?[(Math.random()*2-1)*0.6,(Math.random()*2-1)*0.6,(Math.random()*2-1)*0.6]:null;                   // tilt off the grid
+  boxes.push({x,y,z,hx,hy,hz,rot});
+}
+function makeChunk(detail){
+  const boxes=[]; pushBox(boxes,0,0,0,1);
+  const cores=1+((Math.random()*(1+Math.round(detail*CFG.AST_CORES)))|0);   // 1..(1+detail·cores): bigger masses get more
+  for(let i=1;i<cores;i++){ const b=boxes[(Math.random()*boxes.length)|0], ax=(Math.random()*3)|0, dir=Math.random()<.5?-1:1, h=0.65+Math.random()*0.55;
+    const o=[0,0,0]; o[ax]=dir*([b.hx,b.hy,b.hz][ax]+h)*0.62;                // butt against a face with overlap → conjoined
+    pushBox(boxes,b.x+o[0],b.y+o[1],b.z+o[2],h); }
+  const greebles=(Math.random()*(Math.round(detail*CFG.AST_GREEBLES)+1))|0;  // small rocks → few/none
+  for(let i=0;i<greebles;i++){ const b=boxes[(Math.random()*boxes.length)|0], ax=(Math.random()*3)|0, dir=Math.random()<.5?-1:1, h=0.16+Math.random()*0.34;
+    const p=[b.x+(Math.random()*2-1)*b.hx*0.7, b.y+(Math.random()*2-1)*b.hy*0.7, b.z+(Math.random()*2-1)*b.hz*0.7];
+    p[ax]=[b.x,b.y,b.z][ax]+dir*([b.hx,b.hy,b.hz][ax]+h*0.5);                // sit on the chosen face
+    pushBox(boxes,p[0],p[1],p[2],h); }
+  let ext=0.001; for(const b of boxes) ext=Math.max(ext,Math.abs(b.x)+b.hx,Math.abs(b.y)+b.hy,Math.abs(b.z)+b.hz);
+  const k=1/ext, fills=[], lp=[];                                           // normalise to ~unit radius, then build fill + edges
+  for(const b of boxes){ const g=new THREE.BoxGeometry(b.hx*2*k,b.hy*2*k,b.hz*2*k); if(b.rot)g.applyMatrix4(boxRot(b)); g.translate(b.x*k,b.y*k,b.z*k); fills.push(g); pushCubeEdges(lp,b,k); }
+  const l=new LineSegmentsGeometry(); l.setPositions(lp);
+  return {f:mergeGeometries(fills,false),l};
+}
+// three size tiers (simple → complex); seatRock picks the tier matching each rock's size.
+const astPool=[0.18,0.5,1.0].map(d=>{ const a=[]; for(let i=0;i<CFG.AST_VARIANTS;i++) a.push(makeChunk(d)); return a; });
+// clumps: each is a drifting cluster of rocks; gaps between clumps are the lanes you steer through.
+// A clump recycles as a UNIT (so it never tears apart) once its centre passes the camera.
+const SPANZ=CFG.NEARZ-CFG.FARZ;
+const asteroids=[], clumps=[];
+const gauss=()=>(Math.random()+Math.random()+Math.random()-1.5)/1.5;   // ~normal, roughly -1..1
+function seatRock(a,cl,idx,boulder){
+  const spread=boulder?0.35:1;                                          // boulders sit near the core
+  const sz=boulder?(CFG.AST_MIN+CFG.AST_RND)*CFG.AST_BOULDER*(0.8+Math.random()*0.4)
+                  :CFG.AST_MIN+CFG.AST_RND*Math.pow(Math.random(),2.0);  // power-biased small, boulders big
+  a.r=sz; a.mass=sz*sz*sz;                                               // bounding radius + mass (∝ volume) for collisions
+  const tier=boulder?2:(sz>CFG.AST_MIN+CFG.AST_RND*0.5?1:0);             // match geometry complexity to size
+  const sh=astPool[tier][(Math.random()*CFG.AST_VARIANTS)|0]; a.mesh.geometry=sh.f; a.line.geometry=sh.l;
+  a.mesh.scale.set(sz*(0.72+Math.random()*0.56),sz*(0.72+Math.random()*0.56),sz*(0.72+Math.random()*0.56));
+  // offset within the clump, rejecting spots that overlap an already-seated rock (this clump, this cycle)
+  for(let attempt=0;attempt<CFG.AST_SEP_TRIES;attempt++){
+    a.ox=gauss()*cl.r*spread; a.oy=gauss()*cl.r*spread; a.oz=gauss()*cl.r*1.5*spread;
+    let clear=true;
+    for(let j=0;j<idx;j++){ const o=cl.members[j], ex=a.ox-o.ox, ey=a.oy-o.oy, ez=a.oz-o.oz, rr=(a.r+o.r)*CFG.AST_SEP;
+      if(ex*ex+ey*ey+ez*ez<rr*rr){ clear=false; break; } }
+    if(clear)break;
+  }
   a.mesh.rotation.set(Math.random()*6.28,Math.random()*6.28,Math.random()*6.28);
-  a.sx=(Math.random()-0.5)*0.6; a.sy=(Math.random()-0.5)*0.6; a.sz=(Math.random()-0.5)*0.6;          // tumble rates
+  const dAng=Math.random()*6.2832, dSpd=CFG.AST_DRIFT_MIN+Math.random()*(CFG.AST_DRIFT-CFG.AST_DRIFT_MIN);
+  a.vx=Math.cos(dAng)*dSpd; a.vy=Math.sin(dAng)*dSpd; a.vz=0;            // drift velocity, min-floored so nothing parks in the lane
+  const driftN=Math.min(1,dSpd/(CFG.AST_DRIFT*0.7));                     // 0..1; fast drifters tumble slower
+  const spin=CFG.AST_SPIN*(1-CFG.AST_SPIN_DAMP*driftN);
+  a.sx=(Math.random()-0.5)*spin; a.sy=(Math.random()-0.5)*spin; a.sz=(Math.random()-0.5)*spin;       // tumble, damped by drift
   a.mesh.visible=true;
 }
-for(let i=0;i<CFG.NUM_ASTEROIDS;i++){
-  const sh=astShapes[(Math.random()*astShapes.length)|0];
-  const fill=new THREE.Mesh(sh.f,astFillMat); const line=new LineSegments2(sh.l,astEdgeMat); fill.add(line);
-  const a={mesh:fill,line}; astGroup.add(fill); placeAsteroid(a,true); asteroids.push(a);
+// elastic sphere bounce between two rocks of the same clump (offsets are clump-relative = world-relative).
+// Mass ∝ volume so boulders barely budge; impacts also kick a little tumble in. Impulse-based, no dt.
+function astCollide(a,b){
+  const dx=a.ox-b.ox, dy=a.oy-b.oy, dz=a.oz-b.oz, rr=(a.r+b.r)*CFG.AST_COLLIDE_R, d2=dx*dx+dy*dy+dz*dz;
+  if(d2>=rr*rr||d2<1e-6) return;
+  const d=Math.sqrt(d2), nx=dx/d, ny=dy/d, nz=dz/d, mA=a.mass, mB=b.mass, inv=1/(mA+mB);
+  const overlap=rr-d;                                                    // separate them (mass-weighted) so they don't sink in
+  a.ox+=nx*overlap*mB*inv; a.oy+=ny*overlap*mB*inv; a.oz+=nz*overlap*mB*inv;
+  b.ox-=nx*overlap*mA*inv; b.oy-=ny*overlap*mA*inv; b.oz-=nz*overlap*mA*inv;
+  const vn=(a.vx-b.vx)*nx+(a.vy-b.vy)*ny+(a.vz-b.vz)*nz;                 // closing speed along the contact normal
+  if(vn>0) return;                                                      // already separating
+  const jimp=-(1+CFG.AST_RESTITUTION)*vn/(1/mA+1/mB);                   // elastic impulse
+  a.vx+=jimp/mA*nx; a.vy+=jimp/mA*ny; a.vz+=jimp/mA*nz;
+  b.vx-=jimp/mB*nx; b.vy-=jimp/mB*ny; b.vz-=jimp/mB*nz;
+  const kick=Math.min(CFG.AST_SPIN_KICK,-vn*0.15), S=CFG.AST_SPIN*2.5;  // impact spins them up a touch (clamped)
+  a.sx=THREE.MathUtils.clamp(a.sx+(Math.random()-0.5)*kick,-S,S); a.sy=THREE.MathUtils.clamp(a.sy+(Math.random()-0.5)*kick,-S,S); a.sz=THREE.MathUtils.clamp(a.sz+(Math.random()-0.5)*kick,-S,S);
+  b.sx=THREE.MathUtils.clamp(b.sx+(Math.random()-0.5)*kick,-S,S); b.sy=THREE.MathUtils.clamp(b.sy+(Math.random()-0.5)*kick,-S,S); b.sz=THREE.MathUtils.clamp(b.sz+(Math.random()-0.5)*kick,-S,S);
 }
+function placeClump(cl,anywhere){
+  cl.cx=(Math.random()*2-1)*CFG.AST_X; cl.cy=(Math.random()*2-1)*CFG.AST_Y;
+  cl.r=CFG.AST_CLUMP_R*(0.6+Math.random()*0.8);
+  cl.z=anywhere?(CFG.FARZ+Math.random()*SPANZ):(CFG.FARZ-Math.random()*60);   // recycle → respawn well beyond far
+  const hasBoulder=Math.random()<CFG.AST_BOULDER_P;
+  cl.members.forEach((a,idx)=>seatRock(a,cl,idx,hasBoulder&&idx===0));        // member 0 becomes the boulder
+}
+for(let i=0;i<CFG.NUM_CLUMPS;i++) clumps.push({members:[]});
+const astDef=astPool[0][0];   // placeholder geometry; seatRock swaps in the real tier-matched chunk
+for(let i=0;i<CFG.NUM_ASTEROIDS;i++){
+  const fill=new THREE.Mesh(astDef.f,astFillMat); const line=new LineSegments2(astDef.l,astEdgeMat); fill.add(line);
+  const a={mesh:fill,line}; astGroup.add(fill); asteroids.push(a); clumps[i%CFG.NUM_CLUMPS].members.push(a);
+}
+for(const cl of clumps) placeClump(cl,true);
+// far debris: faint additive blue points across the depth span → parallax + a sense of a vast void
+const debrisPos=new Float32Array(CFG.NUM_DEBRIS*3);
+for(let i=0;i<CFG.NUM_DEBRIS;i++){
+  debrisPos[i*3]=(Math.random()*2-1)*CFG.AST_DEBRIS_X;
+  debrisPos[i*3+1]=(Math.random()*2-1)*CFG.AST_DEBRIS_Y;
+  debrisPos[i*3+2]=CFG.FARZ+Math.random()*SPANZ;
+}
+const debrisGeo=new THREE.BufferGeometry();
+debrisGeo.setAttribute('position',new THREE.Float32BufferAttribute(debrisPos,3));
+const debrisMat=new THREE.PointsMaterial({color:0x6fe0ff,size:0.5,sizeAttenuation:true,transparent:true,opacity:0.55,fog:true,blending:THREE.AdditiveBlending,depthWrite:false});
+const debris=new THREE.Points(debrisGeo,debrisMat); debris.frustumCulled=false; astGroup.add(debris);
 
 /* ---------- pools ---------- */
 const boltGeo=new THREE.BoxGeometry(0.12,0.12,1.7); const projs=[];
@@ -524,6 +665,8 @@ function popText(world,text,color){
 }
 function flash(el,to){el.style.transition='none';el.style.opacity=to;requestAnimationFrame(()=>{el.style.transition='opacity .4s';el.style.opacity=0;});}
 const hitEl=document.getElementById('hit');
+let hitCd=0;                                  // invulnerability timer (counts down) after a hit
+function playerHit(){ if(hitCd>0)return; hitCd=CFG.HIT_CD; shields=Math.max(0,shields-1); updateHUD(); flash(hitEl,0.55); if(shields===0){shields=3;updateHUD();} }
 applyModeVisual(); updateHUD();
 
 /* ---------- loop ---------- */
@@ -531,18 +674,25 @@ let last=performance.now(),camPitch=0,camRecenter=0,orbPitch=0; const tmp=new TH
 function tick(now){
   const dt=Math.min((now-last)/1000,0.05); last=now; requestAnimationFrame(tick);
   const pad=readPad();
+  if(hitCd>0) hitCd-=dt;
 
   let mx=0,my=0;
   if(keys['KeyA']||keys['ArrowLeft'])mx-=1; if(keys['KeyD']||keys['ArrowRight'])mx+=1;
   if(keys['KeyW']||keys['ArrowUp'])my+=1;  if(keys['KeyS']||keys['ArrowDown'])my-=1;
   mx+=pad.x; my+=pad.y;
   aimX=THREE.MathUtils.clamp(mx,-1,1); aimY=THREE.MathUtils.clamp(my,-1,1);
-  player.position.x=THREE.MathUtils.clamp(player.position.x+mx*18*dt,-CFG.LANE_X,CFG.LANE_X);
-  player.position.y=THREE.MathUtils.clamp(player.position.y+my*14*dt,-CFG.LANE_Y,CFG.LANE_Y);
+  // Boundary contract: the env's outer shell is always a SAFE stop; only obstacles damage. Per-env safe
+  // boundary — cave → the visible wall (relax the rectangular lane past the widest wall so the wall
+  // collision below governs); stalactite → fly right up to the floor/ceiling planes. Open envs keep the lane.
+  const caveBound=CFG.CAVE_RADIUS*(1+CFG.CAVE_IRREG)+2;
+  const laneX=(env==='cave')?caveBound:CFG.LANE_X;
+  const laneY=(env==='cave')?caveBound:(env==='stalactite')?CFG.CEIL_Y-1:CFG.LANE_Y;
+  player.position.x=THREE.MathUtils.clamp(player.position.x+mx*18*dt,-laneX,laneX);
+  player.position.y=THREE.MathUtils.clamp(player.position.y+my*14*dt,-laneY,laneY);
   if(env==='channel') player.position.x=THREE.MathUtils.clamp(player.position.x,-(CFG.TRENCH_HALF-0.8),CFG.TRENCH_HALF-0.8); // walls close in
   const orbPitchRate=(aimY!==0)?CFG.ORB_PITCH_IN:CFG.ORB_LEVEL;  // lean-in vs snap-back-to-level
   orbPitch+=(aimY*CFG.ORB_PITCH-orbPitch)*Math.min(1,dt*orbPitchRate);
-  player.rotation.x=orbPitch; player.rotation.z=-mx*0.25; orbGroup.rotation.z+=dt*1.2;
+  player.rotation.x=orbPitch; player.rotation.z=-mx*0.25; orbGroup.rotation.z+=dt*1.2; diskSpin.rotation.y+=dt*1.2;
   playerLight.position.copy(player.position); playerLight.position.z+=1;
   camera.position.x+=(player.position.x*CFG.CAM_LEAD_X-camera.position.x)*Math.min(1,dt*CFG.CAM_DAMP);
   // vertical FOLLOW: weak while moving (orb leads, off-centre); on idle the camera slides up to re-frame the
@@ -592,7 +742,7 @@ function tick(now){
   if(env==='channel'){ for(const t of teeth){
     t.mesh.position.z+=CFG.SPEED*dt;
     if(t.mesh.position.z>CFG.NEARZ){ placeTooth(t,false); continue; }
-    if(flythrough) continue;
+    if(t.aesthetic||flythrough) continue;   // framing teeth scroll/recycle but never damage
     if(Math.abs(t.mesh.position.z-player.position.z)<t.w/2+0.8 &&
        Math.abs(player.position.x-t.mesh.position.x)<t.reach/2+0.6 &&
        Math.abs(player.position.y-t.mesh.position.y)<t.h/2+0.6){
@@ -604,12 +754,31 @@ function tick(now){
     r.mesh.position.z+=CFG.SPEED*dt;   // each ring's shape is FIXED in world space (set on wrap); the morph plays out across rings as they scroll past
     if(r.mesh.position.z>CFG.NEARZ){ r.mesh.position.z-=CAVE_SPAN; r.track+=CAVE_SPAN; r.geo.setPositions(ringPositions(r.track)); }
   }
-  for(const b of bumps){ b.mesh.position.z+=CFG.SPEED*dt; if(b.mesh.position.z>CFG.NEARZ) placeBump(b,false); } }
-  if(env==='asteroid') for(const a of asteroids){
-    a.mesh.position.z+=CFG.SPEED*dt;
-    a.mesh.rotation.x+=a.sx*dt; a.mesh.rotation.y+=a.sy*dt; a.mesh.rotation.z+=a.sz*dt;
-    if(a.mesh.position.z>CFG.NEARZ) placeAsteroid(a,false);
+  for(const b of bumps){ b.mesh.position.z+=CFG.SPEED*dt;
+    if(b.mesh.position.z>CFG.NEARZ){ placeBump(b,false); continue; }
+    if(!flythrough && b.cr){ const dx=b.mesh.position.x-player.position.x, dy=b.mesh.position.y-player.position.y, dz=b.mesh.position.z-player.position.z, hr=b.cr+CFG.PLAYER_R;
+      if(dx*dx+dy*dy+dz*dz<hr*hr) playerHit(); } }   // bumps DAMAGE (the cave's real hazard)
+  if(!flythrough){ const pts=caveCross(CFG.NEARZ-player.position.z+caveScroll).pts, R=CFG.CAVE_RADIUS, px=player.position.x, py=player.position.y;
+    if(!pointInPoly(px,py,pts,R) || distToPoly(px,py,pts,R)<CFG.PLAYER_R){    // SAFE boundary: bonk + push back toward centre, NO damage (the cave's danger is the bumps)
+      const pm=Math.hypot(px,py)||1, push=CFG.SPEED*dt*CFG.CAVE_PUSH; player.position.x-=px/pm*push; player.position.y-=py/pm*push; } } }
+  if(env==='asteroid'){ for(const cl of clumps){
+    cl.z+=CFG.SPEED*dt;                                         // whole clump scrolls together → stays coherent
+    const M=cl.members;
+    for(const a of M){ a.ox+=a.vx*dt; a.oy+=a.vy*dt; a.oz+=a.vz*dt; }              // integrate drift velocity
+    for(let i=0;i<M.length;i++) for(let j=i+1;j<M.length;j++) astCollide(M[i],M[j]); // elastic rock-on-rock bounce
+    for(const a of M){
+      a.mesh.position.set(cl.cx+a.ox,cl.cy+a.oy,cl.z+a.oz);
+      a.mesh.rotation.x+=a.sx*dt; a.mesh.rotation.y+=a.sy*dt; a.mesh.rotation.z+=a.sz*dt;
+      if(!flythrough){ const wx=cl.cx+a.ox-player.position.x, wy=cl.cy+a.oy-player.position.y, wz=cl.z+a.oz-player.position.z, hr=a.r*CFG.AST_HIT_FACTOR+CFG.PLAYER_R;
+        if(wx*wx+wy*wy+wz*wz<hr*hr){ playerHit(); const d=Math.hypot(wx,wy,wz)||1, dv=CFG.PLAYER_BUMP/a.mass; a.vx+=wx/d*dv; a.vy+=wy/d*dv; } } // clip → damage + shove the rock off you
+    }
+    if(cl.z>CFG.NEARZ+24) placeClump(cl,false);                 // recycle once every member is safely behind the camera
   }
+  const dp=debrisGeo.attributes.position;                       // debris scrolls with the field; recycle past the camera (re-scatter x/y so it doesn't loop in a line)
+  for(let i=0;i<CFG.NUM_DEBRIS;i++){ let z=dp.getZ(i)+CFG.SPEED*dt;
+    if(z>CFG.NEARZ){ z-=SPANZ; dp.setX(i,(Math.random()*2-1)*CFG.AST_DEBRIS_X); dp.setY(i,(Math.random()*2-1)*CFG.AST_DEBRIS_Y); }
+    dp.setZ(i,z); }
+  dp.needsUpdate=true; }
 
   if(!flythrough){ waveTimer-=dt; if(waveTimer<=0){ spawnWave(WAVES[waveIx%WAVES.length]); waveIx++; waveTimer=2.7; } }
   if(!flythrough){ fireTimer-=dt; if(fireTimer<=0){ fire(); fireTimer=(mode===MODE.ORB)?CFG.FIRE_INT_ORB:CFG.FIRE_INT; } }
