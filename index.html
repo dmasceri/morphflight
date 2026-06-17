@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>MORPHFLIGHT</title>
+<style>
+  :root{
+    --bg:#05060a; --orb:#39b6ff; --diskh:#3dffa0; --diskv:#3dffa0;
+    --charge:#ff3d8b; --ink:#bfe6ff; --dim:#566677;
+  }
+  html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;}
+  #app{position:fixed;inset:0;} canvas{display:block;}
+  .hud{position:fixed;font-family:"SF Mono",ui-monospace,"Roboto Mono",Menlo,Consolas,monospace;
+       color:var(--ink);pointer-events:none;text-shadow:0 0 8px rgba(0,0,0,.95);user-select:none;}
+  #tl{top:14px;left:16px;font-size:13px;line-height:1.7;}
+  #tr{top:14px;right:16px;text-align:right;font-size:13px;line-height:1.7;}
+  #bc{bottom:12px;left:0;right:0;text-align:center;font-size:11px;color:var(--dim);letter-spacing:.05em;}
+  .mode{font-weight:700;letter-spacing:.14em;} .lbl{color:var(--dim);}
+  .chainbig{font-size:32px;font-weight:800;line-height:1;transition:transform .08s;}
+  .pip{display:inline-block;width:9px;height:9px;border-radius:50%;margin-left:5px;background:var(--dim);}
+  .pip.on{background:var(--charge);box-shadow:0 0 8px var(--charge);}
+  .shp{display:inline-block;width:7px;height:13px;margin-left:4px;border-radius:1px;background:#7a8a5a;box-shadow:0 0 6px #4a5a3a;}
+  .shp.off{background:#26221e;box-shadow:none;}
+  .pop{position:fixed;font-family:ui-monospace,monospace;font-weight:800;font-size:15px;letter-spacing:.08em;
+       pointer-events:none;transform:translate(-50%,-50%);text-shadow:0 0 10px currentColor;white-space:nowrap;}
+  #hit{position:fixed;inset:0;pointer-events:none;background:var(--charge);opacity:0;}
+  #flash{position:fixed;inset:0;pointer-events:none;background:radial-gradient(circle at center,transparent 40%,var(--charge) 150%);opacity:0;mix-blend-mode:screen;}
+  #gp{position:fixed;bottom:12px;right:16px;font-family:ui-monospace,monospace;font-size:11px;color:var(--dim);pointer-events:none;text-align:right;}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="tl" class="hud">
+  <div><span class="lbl">MODE</span> <span id="modeTxt" class="mode">ORB</span></div>
+  <div><span class="lbl">CHAIN</span> <span id="chainSmall">0</span> &nbsp; <span class="lbl">SCORE</span> <span id="score">0</span></div>
+</div>
+<div id="tr" class="hud">
+  <div><span class="lbl">CHARGE</span> <span id="pips"></span></div>
+  <div><span class="lbl">HULL</span> <span id="shields"></span></div>
+  <div style="margin-top:10px;"><span id="chainBig" class="chainbig"></span></div>
+</div>
+<div id="bc" class="hud">
+  MOVE / AIM WASD · stick &nbsp;•&nbsp; HOLD L-MOUSE/E/RT = horizontal &nbsp;•&nbsp; HOLD R-MOUSE/Q/LT = vertical &nbsp;•&nbsp; release = orb &nbsp;•&nbsp; CHARGE SPACE / A
+</div>
+<div id="flash"></div><div id="hit"></div>
+<div id="gp" class="hud">⌨ keyboard + mouse<br><span style="opacity:.7">plug in a controller to use triggers</span></div>
+
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>

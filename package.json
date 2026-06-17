@@ -1,0 +1,18 @@
+{
+  "name": "morphflight",
+  "private": true,
+  "version": "0.6.0",
+  "type": "module",
+  "description": "On-rails cave flyer with a morph/orient weapon verb. Vertical-slice prototype.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "three": "^0.160.0"
+  },
+  "devDependencies": {
+    "vite": "^5.2.0"
+  }
+}
