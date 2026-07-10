@@ -737,6 +737,34 @@ function readPad(){
   return {x,y:-y,lt,rt,charge,dash};
 }
 
+/* ---------- attract / demo autopilot (append ?demo to the URL) ---------- */
+const DEMO=new URLSearchParams(location.search).has('demo');
+const dm={x:0,y:0,h:false,v:false,dash:false};
+const DEMO_ENVS=['forest','stalactite','channel','cave','asteroid'];
+let demoT=0,demoEnvT=0,demoEnvIx=0,demoDashClock=0,demoDashPulse=0,demoChargeT=0;
+if(DEMO){ const bc=document.getElementById('bc'); if(bc)bc.style.display='none';
+          const gp=document.getElementById('gp'); if(gp)gp.style.display='none'; }
+function updateDemo(dt){
+  demoT+=dt;
+  // smooth weaving flight (layered sines → figure-eight-ish drift)
+  dm.x=0.85*Math.sin(demoT*0.9)+0.15*Math.sin(demoT*2.3);
+  dm.y=0.62*Math.sin(demoT*1.6+0.7);
+  // morph to MATCH the nearest approaching wave: row→disk-H, stack→disk-V, swarm→orb
+  let best=null,bestZ=-Infinity;
+  for(const e of enemies){ if(!e.alive)continue; const z=e.mesh.position.z;
+    if(z<player.position.z && z>bestZ){ bestZ=z; best=e; } }
+  dm.h=!!best&&best.formation==='row';
+  dm.v=!!best&&best.formation==='stack';
+  // periodic dash — brief pulse so the edge-trigger fires once
+  demoDashClock+=dt; dm.dash=false;
+  if(demoDashClock>=3){ demoDashClock=0; demoDashPulse=0.12; }
+  if(demoDashPulse>0){ demoDashPulse-=dt; dm.dash=true; }
+  // occasional charge nova for flair
+  demoChargeT+=dt; if(demoChargeT>6){ demoChargeT=0; fireCharge(); }
+  // cycle environments on a steady cadence
+  demoEnvT+=dt; if(demoEnvT>2.6){ demoEnvT=0; demoEnvIx=(demoEnvIx+1)%DEMO_ENVS.length; setEnv(DEMO_ENVS[demoEnvIx]); }
+}
+
 /* ---------- HUD ---------- */
 let score=0,chain=0,bestChain=0,shields=3;
 function updateHUD(){
@@ -771,16 +799,18 @@ let last=performance.now(),camPitch=0,camRecenter=0,orbPitch=0; const tmp=new TH
 function tick(now){
   const dt=Math.min((now-last)/1000,0.05); last=now; requestAnimationFrame(tick);
   const pad=readPad();
+  if(DEMO) updateDemo(dt);
   if(hitCd>0) hitCd-=dt;
 
   let mx=0,my=0;
   if(keys['KeyA']||keys['ArrowLeft'])mx-=1; if(keys['KeyD']||keys['ArrowRight'])mx+=1;
   if(keys['KeyW']||keys['ArrowUp'])my+=1;  if(keys['KeyS']||keys['ArrowDown'])my-=1;
   mx+=pad.x; my+=pad.y;
+  if(DEMO){ mx+=dm.x; my+=dm.y; }
   aimX=THREE.MathUtils.clamp(mx,-1,1); aimY=THREE.MathUtils.clamp(my,-1,1);
   // --- dash: edge-triggered, gated by cooldown; direction is sampled from the stick at press-time ---
   dashCd=Math.max(0,dashCd-dt); if(dashT>0)dashT-=dt; if(dashRecover>0)dashRecover-=dt;
-  const wantDash=pad.dash||keys['ShiftLeft']||keys['ShiftRight'];
+  const wantDash=pad.dash||keys['ShiftLeft']||keys['ShiftRight']||(DEMO&&dm.dash);
   if(wantDash&&!padPrevDash&&dashCd<=0&&dashT<=0) startDash(); padPrevDash=wantDash;
   // Boundary contract: the env's outer shell is always a SAFE stop; only obstacles damage. Per-env safe
   // boundary — cave → the visible wall (relax the rectangular lane past the widest wall so the wall
@@ -825,8 +855,8 @@ function tick(now){
   camPitch+=(aimY-camPitch)*Math.min(1,dt*((aimY!==0)?CFG.CAM_TILT_IN:CFG.CAM_TILT_OUT));
   camera.lookAt(camera.position.x, camera.position.y+CFG.CAM_LOOK_UP+camPitch*CFG.CAM_TILT, camera.position.z-CFG.CAM_LOOK_AHEAD);
 
-  const wantH=(pad.rt>=0.35)||keys['KeyE']||mouseL;
-  const wantV=(pad.lt>=0.35)||keys['KeyQ']||mouseR;
+  const wantH=(pad.rt>=0.35)||keys['KeyE']||mouseL||(DEMO&&dm.h);
+  const wantV=(pad.lt>=0.35)||keys['KeyQ']||mouseR||(DEMO&&dm.v);
   if(wantH&&wantV) mode=(pad.rt>=pad.lt)?MODE.DISKH:MODE.DISKV;
   else if(wantH) mode=MODE.DISKH; else if(wantV) mode=MODE.DISKV; else mode=MODE.ORB;
   applyModeVisual();

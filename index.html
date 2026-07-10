@@ -27,6 +27,16 @@
   #hit{position:fixed;inset:0;pointer-events:none;background:var(--charge);opacity:0;}
   #flash{position:fixed;inset:0;pointer-events:none;background:radial-gradient(circle at center,transparent 40%,var(--charge) 150%);opacity:0;mix-blend-mode:screen;}
   #gp{position:fixed;bottom:12px;right:16px;font-family:ui-monospace,monospace;font-size:11px;color:var(--dim);pointer-events:none;text-align:right;}
+  #mgate{position:fixed;inset:0;z-index:50;display:none;flex-direction:column;align-items:center;justify-content:center;
+    text-align:center;padding:32px;background:radial-gradient(circle at 50% 38%,#0b1020,#05060a 72%);
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;color:var(--ink);}
+  #mgate.show{display:flex;}
+  #mgate h1{font-size:26px;letter-spacing:.24em;margin:0 0 6px;color:#fff;text-shadow:0 0 14px var(--orb);}
+  #mgate .tag{font-size:11px;letter-spacing:.18em;color:var(--dim);text-transform:uppercase;margin-bottom:24px;}
+  #mgate p{font-size:15px;line-height:1.7;max-width:30ch;margin:0 0 20px;}
+  #mgate .keys{font-size:12px;color:var(--dim);line-height:2;letter-spacing:.04em;}
+  #mgate .keys b{color:var(--orb);font-weight:600;}
+  #mgate a{color:var(--charge);text-decoration:none;font-size:13px;margin-top:24px;border-bottom:1px solid #3a2733;}
 </style>
 </head>
 <body>
@@ -45,6 +55,26 @@
 </div>
 <div id="flash"></div><div id="hit"></div>
 <div id="gp" class="hud">⌨ keyboard + mouse<br><span style="opacity:.7">plug in a controller to use triggers</span></div>
+
+<div id="mgate">
+  <h1>MORPHFLIGHT</h1>
+  <div class="tag">a desktop flight</div>
+  <p>This one flies with a keyboard &amp; mouse — or a gamepad. Touchscreens can't steer it yet, so jump on a computer to play.</p>
+  <div class="keys">
+    <b>WASD</b> / stick — move &amp; aim<br>
+    hold <b>L&#8209;mouse / E / RT</b> — horizontal disk<br>
+    hold <b>R&#8209;mouse / Q / LT</b> — vertical disk<br>
+    <b>Space / A</b> — charge
+  </div>
+  <a href="https://github.com/dmasceri/morphflight">See the code on GitHub ↗</a>
+</div>
+<script>
+  (function(){
+    if(matchMedia('(pointer: coarse)').matches && !matchMedia('(any-pointer: fine)').matches){
+      document.getElementById('mgate').classList.add('show');
+    }
+  })();
+</script>
 
 <script type="module" src="/src/main.js"></script>
 </body>
