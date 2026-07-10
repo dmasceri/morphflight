@@ -741,28 +741,46 @@ function readPad(){
 const DEMO=new URLSearchParams(location.search).has('demo');
 const dm={x:0,y:0,h:false,v:false,dash:false};
 const DEMO_ENVS=['forest','stalactite','channel','cave','asteroid'];
-let demoT=0,demoEnvT=0,demoEnvIx=0,demoDashClock=0,demoDashPulse=0,demoChargeT=0;
+let demoT=0,demoEnvT=0,demoEnvIx=0,demoDashClock=0,demoDashPulse=0,demoChargeT=0,weavePh=0;
 if(DEMO){ const bc=document.getElementById('bc'); if(bc)bc.style.display='none';
           const gp=document.getElementById('gp'); if(gp)gp.style.display='none'; }
 function updateDemo(dt){
   demoT+=dt;
-  // smooth weaving flight (layered sines → figure-eight-ish drift)
-  dm.x=0.85*Math.sin(demoT*0.9)+0.15*Math.sin(demoT*2.3);
-  dm.y=0.62*Math.sin(demoT*1.6+0.7);
+  const px=player.position.x, py=player.position.y;
+  // Cave (jagged walls ~5u in) and channel (9u slot) stay tighter to center.
+  // (Stalactites/asteroids are in-lane — those we take on the chin.)
+  const tight=(env==='cave'||env==='channel');
+  const kx=tight?0.16:0.10, ky=(env==='cave')?0.16:0.13;
+  // slow "energy" ebb & flow (0..1, ~15s) → alternates lively bursts vs calm stretches
+  const energy=0.5+0.5*Math.sin(demoT*0.42);
+  // weave: bigger & faster when energetic, gentler & slower when calm.
+  // integrate phase so the frequency can change without snapping.
+  weavePh+=dt*0.8*(0.6+0.8*energy);
+  const amp=(tight?0.26:0.42)*(0.5+1.0*energy);
+  let tx=amp*Math.sin(weavePh)+0.07*Math.sin(weavePh*2.3);
+  let ty=amp*0.72*Math.sin(weavePh*1.6+0.6);
+  tx-=px*kx; ty-=py*ky;
+  // dashes cluster in busy stretches (~2s apart), thin out in calm ones (~5.5s);
+  // fired from CENTER so each reads as a forward dive, not a sideways wall-slam
+  const dashInterval=5.5-3.5*energy;
+  demoDashClock+=dt;
+  if(demoDashClock>=dashInterval){ demoDashClock=0; demoDashPulse=0.14; }
+  if(demoDashPulse>0){ demoDashPulse-=dt; tx=0; ty=0; dm.dash=true; } else dm.dash=false;
+  dm.x=THREE.MathUtils.clamp(tx,-1,1);
+  dm.y=THREE.MathUtils.clamp(ty,-1,1);
   // morph to MATCH the nearest approaching wave: row→disk-H, stack→disk-V, swarm→orb
   let best=null,bestZ=-Infinity;
   for(const e of enemies){ if(!e.alive)continue; const z=e.mesh.position.z;
     if(z<player.position.z && z>bestZ){ bestZ=z; best=e; } }
   dm.h=!!best&&best.formation==='row';
   dm.v=!!best&&best.formation==='stack';
-  // periodic dash — brief pulse so the edge-trigger fires once
-  demoDashClock+=dt; dm.dash=false;
-  if(demoDashClock>=3){ demoDashClock=0; demoDashPulse=0.12; }
-  if(demoDashPulse>0){ demoDashPulse-=dt; dm.dash=true; }
   // occasional charge nova for flair
   demoChargeT+=dt; if(demoChargeT>6){ demoChargeT=0; fireCharge(); }
-  // cycle environments on a steady cadence
-  demoEnvT+=dt; if(demoEnvT>2.6){ demoEnvT=0; demoEnvIx=(demoEnvIx+1)%DEMO_ENVS.length; setEnv(DEMO_ENVS[demoEnvIx]); }
+  // environments run a bit longer now; snap toward center on the cut so a tighter
+  // next environment doesn't start us against a wall
+  demoEnvT+=dt;
+  if(demoEnvT>4.5){ demoEnvT=0; demoEnvIx=(demoEnvIx+1)%DEMO_ENVS.length; setEnv(DEMO_ENVS[demoEnvIx]);
+    player.position.x*=0.3; player.position.y*=0.3; }
 }
 
 /* ---------- HUD ---------- */
