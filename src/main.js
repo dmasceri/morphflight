@@ -741,9 +741,29 @@ function readPad(){
 const DEMO=new URLSearchParams(location.search).has('demo');
 const dm={x:0,y:0,h:false,v:false,dash:false};
 const DEMO_ENVS=['forest','stalactite','channel','cave','asteroid'];
-let demoT=0,demoEnvT=0,demoEnvIx=0,demoDashClock=0,demoDashPulse=0,demoChargeT=0,weavePh=0;
+let demoT=0,demoEnvT=0,demoEnvIx=0,demoDashClock=0,demoDashPulse=0,demoChargeT=0,weavePh=0,demoDashX=0,demoDashY=0;
 if(DEMO){ const bc=document.getElementById('bc'); if(bc)bc.style.display='none';
-          const gp=document.getElementById('gp'); if(gp)gp.style.display='none'; }
+          const gp=document.getElementById('gp'); if(gp)gp.style.display='none';
+          seedField(); }
+// pre-populate the approach corridor so enemies are on-screen within a frame, not seconds
+function spawnWaveAt(kind,z){
+  if(kind==='row'){ for(let i=-5;i<=5;i++) spawnEnemy(i*2.8,0,z,'row'); }
+  else if(kind==='stack'){ for(let i=-5;i<=5;i++) spawnEnemy(0,i*1.9,z,'stack'); }
+  else { for(let i=0;i<16;i++) spawnEnemy((Math.random()*2-1)*7,(Math.random()*2-1)*6,z+Math.random()*8,'swarm'); }
+}
+function seedField(){ const depths=[-24,-64,-108,-150,-196,-236];
+  for(let i=0;i<depths.length;i++) spawnWaveAt(WAVES[i%WAVES.length],depths[i]); }
+// dash direction: the environment's open axis (or the morph in the forest), aimed toward center
+function demoDashVec(){
+  let axis;
+  if(env==='stalactite') axis='x';                 // open sideways, tight up/down
+  else if(env==='channel'||env==='asteroid') axis='y'; // canyon slot / open field → vertical
+  else if(env==='cave') axis=null;                 // tight all round → forward dive
+  else axis = dm.h?'x' : dm.v?'y' : null;          // forest → follow the morph
+  if(!axis) return {x:0,y:0};
+  if(axis==='x'){ const s=Math.abs(player.position.x)>2?-Math.sign(player.position.x):(Math.sin(demoT*0.7)>=0?1:-1); return {x:s,y:0}; }
+  const s=Math.abs(player.position.y)>2?-Math.sign(player.position.y):(Math.sin(demoT*0.9)>=0?1:-1); return {x:0,y:s};
+}
 function updateDemo(dt){
   demoT+=dt;
   const px=player.position.x, py=player.position.y;
@@ -753,6 +773,13 @@ function updateDemo(dt){
   const kx=tight?0.16:0.10, ky=(env==='cave')?0.16:0.13;
   // slow "energy" ebb & flow (0..1, ~15s) → alternates lively bursts vs calm stretches
   const energy=0.5+0.5*Math.sin(demoT*0.42);
+  // morph to MATCH the nearest approaching wave (row→disk-H, stack→disk-V, swarm→orb).
+  // Computed before the dash so the dash can follow the morph.
+  let best=null,bestZ=-Infinity;
+  for(const e of enemies){ if(!e.alive)continue; const z=e.mesh.position.z;
+    if(z<player.position.z && z>bestZ){ bestZ=z; best=e; } }
+  dm.h=!!best&&best.formation==='row';
+  dm.v=!!best&&best.formation==='stack';
   // weave: bigger & faster when energetic, gentler & slower when calm.
   // integrate phase so the frequency can change without snapping.
   weavePh+=dt*0.8*(0.6+0.8*energy);
@@ -761,19 +788,14 @@ function updateDemo(dt){
   let ty=amp*0.72*Math.sin(weavePh*1.6+0.6);
   tx-=px*kx; ty-=py*ky;
   // dashes cluster in busy stretches (~2s apart), thin out in calm ones (~5.5s);
-  // fired from CENTER so each reads as a forward dive, not a sideways wall-slam
+  // direction follows the morph / environment's open axis (locked at trigger)
   const dashInterval=5.5-3.5*energy;
   demoDashClock+=dt;
-  if(demoDashClock>=dashInterval){ demoDashClock=0; demoDashPulse=0.14; }
-  if(demoDashPulse>0){ demoDashPulse-=dt; tx=0; ty=0; dm.dash=true; } else dm.dash=false;
+  if(demoDashClock>=dashInterval){ demoDashClock=0; demoDashPulse=0.16;
+    const dv=demoDashVec(); demoDashX=dv.x; demoDashY=dv.y; }
+  if(demoDashPulse>0){ demoDashPulse-=dt; tx=demoDashX; ty=demoDashY; dm.dash=true; } else dm.dash=false;
   dm.x=THREE.MathUtils.clamp(tx,-1,1);
   dm.y=THREE.MathUtils.clamp(ty,-1,1);
-  // morph to MATCH the nearest approaching wave: row→disk-H, stack→disk-V, swarm→orb
-  let best=null,bestZ=-Infinity;
-  for(const e of enemies){ if(!e.alive)continue; const z=e.mesh.position.z;
-    if(z<player.position.z && z>bestZ){ bestZ=z; best=e; } }
-  dm.h=!!best&&best.formation==='row';
-  dm.v=!!best&&best.formation==='stack';
   // occasional charge nova for flair
   demoChargeT+=dt; if(demoChargeT>6){ demoChargeT=0; fireCharge(); }
   // environments run a bit longer now; snap toward center on the cut so a tighter
