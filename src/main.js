@@ -23,6 +23,17 @@ const CFG = {
   ORB_PITCH_IN: 10,   // how fast it leans into the movement
   ORB_LEVEL: 5,       // how fast the orb snaps back to level after you let go
 
+  // --- dash (left-thumb burst: hold a direction to blink that way, neutral stick = forward surge) ---
+  DASH_CD: 0.55,        // cooldown between dashes (s)
+  DASH_DUR: 0.15,       // directional blink duration (s) — short = snappier
+  DASH_DIST: 8,         // directional blink distance (world units travelled over DASH_DUR)
+  DASH_FWD_DUR: 0.13,   // forward-surge burst duration (s)
+  DASH_FWD_DIST: 30,    // how far ahead of the camera the surge throws you (−z units)
+  DASH_FWD_RECOVER: 2.4,// how fast you ease back to the cruising plane after a surge (higher = snappier return)
+  DASH_CAM_CATCH: 2.0,  // how fast the camera reels in the forward gap (LOWER = lazier catch-up, bigger stretch)
+  DASH_TRAIL_LEN: 12,   // streamer history length (samples) — longer = longer speed-lines off each octagon point
+  DASH_TRAIL_FADE: 0.22,// how long the streamers linger and fade after a dash ends (s)
+
   // --- camera ---
   CAM_LOOK_UP: -0.5,  // default upward aim (target sits this far above the camera) — higher = faces up more
   CAM_TILT: 5,        // extra up/down aim when moving vertically
@@ -187,6 +198,68 @@ function applyModeVisual(){
     if(mode===MODE.DISKH) diskGroup.rotation.set(0,0,0); else diskGroup.rotation.set(0,0,Math.PI/2); }
   playerLight.color.setHex(isOrb?0xffb070:MCOL[mode]);
   const t=document.getElementById('modeTxt'); t.textContent=NAME[mode]; t.style.color=MCSS[mode];
+}
+
+/* ---------- dash streamers: a line trailing from each of the orb octagon's 8 points. Each point keeps a
+   short history of its WORLD positions, so the lines stream opposite the dash for free — toward the camera
+   on a forward surge, sideways/vertically on a blink. Head bright → tail fades to nothing (additive). The
+   per-vertex history is also a cleaner base for the future ghost-pilot/lightblade upgrades than silhouettes. ---------- */
+const TL=CFG.DASH_TRAIL_LEN, TPTS=8;                        // history length, octagon point count
+// the streamers anchor to whichever octagon is showing: orb (XY plane, r=0.85) vs disk core (XZ plane, r=DISK_R)
+const trailLocalOrb=[], trailLocalDisk=[];
+for(let i=0;i<TPTS;i++){ const a=i*Math.PI/4;
+  trailLocalOrb.push(new THREE.Vector3(Math.cos(a)*0.85,Math.sin(a)*0.85,0));
+  trailLocalDisk.push(new THREE.Vector3(Math.cos(a)*DISK_R,0,Math.sin(a)*DISK_R)); }
+const trailHist=trailLocalOrb.map(()=>[]);                  // per-point flat [x,y,z,...] ring buffer, newest first
+const _segN=TPTS*(TL-1);
+const trailGeo=new THREE.BufferGeometry();
+const trailPos=new Float32Array(_segN*2*3), trailCol=new Float32Array(_segN*2*3);
+trailGeo.setAttribute('position',new THREE.BufferAttribute(trailPos,3));
+trailGeo.setAttribute('color',new THREE.BufferAttribute(trailCol,3));
+const trail=new THREE.LineSegments(trailGeo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,blending:THREE.AdditiveBlending,depthWrite:false,fog:true}));
+trail.frustumCulled=false; trail.visible=false; scene.add(trail);
+let trailAlpha=0; const _tp=new THREE.Vector3(), _tc=new THREE.Color();
+function trailHeads(reset){                                 // sample the current octagon's 8 points in world space (reset = collapse history onto them)
+  const isOrb=mode===MODE.ORB, node=isOrb?orbGroup:diskSpin, local=isOrb?trailLocalOrb:trailLocalDisk;
+  node.updateWorldMatrix(true,false);
+  for(let i=0;i<TPTS;i++){ _tp.copy(local[i]).applyMatrix4(node.matrixWorld); const h=trailHist[i];
+    if(reset){ h.length=0; for(let k=0;k<TL;k++) h.push(_tp.x,_tp.y,_tp.z); }
+    else { h.unshift(_tp.x,_tp.y,_tp.z); if(h.length>TL*3) h.length=TL*3; } }
+}
+function buildTrail(){                                      // rebuild the segment soup: head bright → tail dark, × global fade
+  _tc.setHex(MCOL[mode]); let o=0;
+  for(let i=0;i<TPTS;i++){ const h=trailHist[i];
+    for(let k=0;k<TL-1;k++){ const a=k*3,b=a+3;
+      trailPos[o]=h[a];trailPos[o+1]=h[a+1];trailPos[o+2]=h[a+2]; trailPos[o+3]=h[b];trailPos[o+4]=h[b+1];trailPos[o+5]=h[b+2];
+      const fa=(1-k/(TL-1))*trailAlpha, fb=(1-(k+1)/(TL-1))*trailAlpha;
+      trailCol[o]=_tc.r*fa;trailCol[o+1]=_tc.g*fa;trailCol[o+2]=_tc.b*fa; trailCol[o+3]=_tc.r*fb;trailCol[o+4]=_tc.g*fb;trailCol[o+5]=_tc.b*fb;
+      o+=6; } }
+  trailGeo.attributes.position.needsUpdate=true; trailGeo.attributes.color.needsUpdate=true;
+}
+
+/* ---------- dash light blade: in disk mode, a dash that lies IN the disk's plane sweeps a filled 2D
+   strip (width = disk diameter) along the dash path instead of point streaks — head bright → tail fades.
+   This is the seed for the damaging lightblade; for now it's pure light. ---------- */
+const bladeHist=[];                                         // disk-centre world positions over the dash, newest first
+const _bladeQuads=TL-1, bladeGeo=new THREE.BufferGeometry();
+const bladePos=new Float32Array(_bladeQuads*6*3), bladeCol=new Float32Array(_bladeQuads*6*3);   // 2 tris (6 verts) per swept quad
+bladeGeo.setAttribute('position',new THREE.BufferAttribute(bladePos,3));
+bladeGeo.setAttribute('color',new THREE.BufferAttribute(bladeCol,3));
+const blade=new THREE.Mesh(bladeGeo,new THREE.MeshBasicMaterial({vertexColors:true,transparent:true,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide,fog:true}));
+blade.frustumCulled=false; blade.visible=false; scene.add(blade);
+const bladePerp=new THREE.Vector3(), _bn=new THREE.Vector3(), _bd=new THREE.Vector3();   // half-width vector (⟂ to dash, in-plane); disk normal; dash dir
+function bladeReset(){ bladeHist.length=0; for(let k=0;k<TL;k++) bladeHist.push(player.position.x,player.position.y,player.position.z); }
+function bladeSample(){ bladeHist.unshift(player.position.x,player.position.y,player.position.z); if(bladeHist.length>TL*3) bladeHist.length=TL*3; }
+function buildBlade(){                                       // ribbon between the swept centre-line ± the half-width vector
+  _tc.setHex(MCOL[mode]); const px=bladePerp.x,py=bladePerp.y,pz=bladePerp.z; let o=0;
+  for(let k=0;k<TL-1;k++){ const i0=k*3,i1=i0+3;
+    const ax=bladeHist[i0],ay=bladeHist[i0+1],az=bladeHist[i0+2], bx=bladeHist[i1],by=bladeHist[i1+1],bz=bladeHist[i1+2];
+    const fa=(1-k/(TL-1))*trailAlpha, fb=(1-(k+1)/(TL-1))*trailAlpha;
+    const V=[[ax+px,ay+py,az+pz,fa],[ax-px,ay-py,az-pz,fa],[bx+px,by+py,bz+pz,fb],   // tri 1: head+, head-, tail+
+             [ax-px,ay-py,az-pz,fa],[bx-px,by-py,bz-pz,fb],[bx+px,by+py,bz+pz,fb]];  // tri 2: head-, tail-, tail+
+    for(const q of V){ bladePos[o]=q[0];bladePos[o+1]=q[1];bladePos[o+2]=q[2];
+      bladeCol[o]=_tc.r*q[3];bladeCol[o+1]=_tc.g*q[3];bladeCol[o+2]=_tc.b*q[3]; o+=3; } }
+  bladeGeo.attributes.position.needsUpdate=true; bladeGeo.attributes.color.needsUpdate=true;
 }
 
 /* ---------- the great hall: spaced pillars + edge framing ---------- */
@@ -593,6 +666,29 @@ function fireCharge(){ if(charges<=0||novaActive)return;
   charges--; updateHUD(); novaActive=true; novaR=2; nova.visible=true;
   nova.position.copy(player.position); nova.material.opacity=0.5; flash(document.getElementById('flash'),0.9); }
 
+/* ---------- dash ---------- */
+let dashCd=0,dashT=0,dashFwd=false,dashBlade=false,dashDirX=0,dashDirY=0,dashSpd=0,dashRecover=0,padPrevDash=false;
+let camHoldX=0,camHoldY=0;   // camera pose frozen at blink start so it holds while the pilot darts within the frame
+function startDash(){
+  const mag=Math.hypot(aimX,aimY);
+  dashCd=CFG.DASH_CD; trailAlpha=1; dashBlade=false;
+  if(mag>0.25){ // directional blink — lunge along the held stick, camera stays put
+    dashFwd=false; dashDirX=aimX/mag; dashDirY=aimY/mag;
+    dashT=CFG.DASH_DUR; dashSpd=CFG.DASH_DIST/CFG.DASH_DUR;
+    camHoldX=camera.position.x; camHoldY=camera.position.y; dashRecover=CFG.DASH_DUR+0.45;
+    if(mode!==MODE.ORB){ // light blade: only when the dash lies IN the disk's plane (⟂ to its normal)
+      diskSpin.updateWorldMatrix(true,false);
+      _bn.set(0,1,0).transformDirection(diskSpin.matrixWorld);          // disk plane normal (world)
+      _bd.set(dashDirX,dashDirY,0);
+      if(Math.abs(_bd.dot(_bn))<0.35){ dashBlade=true; bladePerp.crossVectors(_bn,_bd).normalize().multiplyScalar(DISK_R); } // half-width ⟂ to dash, in-plane
+    }
+  }else{        // neutral stick — forward surge: dive away from the camera, then ease back to the cruising plane
+    dashFwd=true; dashT=CFG.DASH_FWD_DUR; dashSpd=CFG.DASH_FWD_DIST/CFG.DASH_FWD_DUR; dashRecover=0;
+  }
+  if(dashBlade){ trail.visible=false; bladeReset(); blade.visible=true; }   // sweep a filled strip...
+  else { blade.visible=false; trailHeads(true); trail.visible=true; }       // ...or stream the 8 point lines
+}
+
 /* ---------- environment switching + flythrough (vibe-check geometry with no combat) ---------- */
 let env=CFG.ENV, flythrough=false;
 const envEl=document.createElement('div'); envEl.className='hud';
@@ -637,7 +733,8 @@ function readPad(){
   const axTrig=i=>(axBase[i]<-0.5 && gp.axes[i]!==undefined)?Math.max(0,(gp.axes[i]+1)/2):0;
   let lt=Math.max(bt(6),axTrig(3)),rt=Math.max(bt(7),axTrig(4));
   const charge=!!((gp.buttons[0]&&gp.buttons[0].pressed)||(gp.buttons[1]&&gp.buttons[1].pressed));
-  return {x,y:-y,lt,rt,charge};
+  const dash=!!(gp.buttons[2]&&gp.buttons[2].pressed);   // X (left thumb) = dash; A/B are taken by charge
+  return {x,y:-y,lt,rt,charge,dash};
 }
 
 /* ---------- HUD ---------- */
@@ -681,19 +778,36 @@ function tick(now){
   if(keys['KeyW']||keys['ArrowUp'])my+=1;  if(keys['KeyS']||keys['ArrowDown'])my-=1;
   mx+=pad.x; my+=pad.y;
   aimX=THREE.MathUtils.clamp(mx,-1,1); aimY=THREE.MathUtils.clamp(my,-1,1);
+  // --- dash: edge-triggered, gated by cooldown; direction is sampled from the stick at press-time ---
+  dashCd=Math.max(0,dashCd-dt); if(dashT>0)dashT-=dt; if(dashRecover>0)dashRecover-=dt;
+  const wantDash=pad.dash||keys['ShiftLeft']||keys['ShiftRight'];
+  if(wantDash&&!padPrevDash&&dashCd<=0&&dashT<=0) startDash(); padPrevDash=wantDash;
   // Boundary contract: the env's outer shell is always a SAFE stop; only obstacles damage. Per-env safe
   // boundary — cave → the visible wall (relax the rectangular lane past the widest wall so the wall
   // collision below governs); stalactite → fly right up to the floor/ceiling planes. Open envs keep the lane.
   const caveBound=CFG.CAVE_RADIUS*(1+CFG.CAVE_IRREG)+2;
   const laneX=(env==='cave')?caveBound:CFG.LANE_X;
   const laneY=(env==='cave')?caveBound:(env==='stalactite')?CFG.CEIL_Y-1:CFG.LANE_Y;
-  player.position.x=THREE.MathUtils.clamp(player.position.x+mx*18*dt,-laneX,laneX);
-  player.position.y=THREE.MathUtils.clamp(player.position.y+my*14*dt,-laneY,laneY);
+  let dvx=0,dvy=0; if(dashT>0&&!dashFwd){ dvx=dashDirX*dashSpd; dvy=dashDirY*dashSpd; }  // directional blink rides on top of normal steering
+  player.position.x=THREE.MathUtils.clamp(player.position.x+(mx*18+dvx)*dt,-laneX,laneX);
+  player.position.y=THREE.MathUtils.clamp(player.position.y+(my*14+dvy)*dt,-laneY,laneY);
   if(env==='channel') player.position.x=THREE.MathUtils.clamp(player.position.x,-(CFG.TRENCH_HALF-0.8),CFG.TRENCH_HALF-0.8); // walls close in
+  // forward surge: dive to −z during the burst, then ease back to the cruising plane (z=0). Pilot speed
+  // returns to cruising the instant the burst ends; the camera (below) closes the remaining gap on its own.
+  if(dashFwd&&dashT>0) player.position.z-=dashSpd*dt;
+  else if(player.position.z<0) player.position.z+=(0-player.position.z)*Math.min(1,dt*CFG.DASH_FWD_RECOVER);
   const orbPitchRate=(aimY!==0)?CFG.ORB_PITCH_IN:CFG.ORB_LEVEL;  // lean-in vs snap-back-to-level
   orbPitch+=(aimY*CFG.ORB_PITCH-orbPitch)*Math.min(1,dt*orbPitchRate);
   player.rotation.x=orbPitch; player.rotation.z=-mx*0.25; orbGroup.rotation.z+=dt*1.2; diskSpin.rotation.y+=dt*1.2;
   playerLight.position.copy(player.position); playerLight.position.z+=1;
+  // dash trail: sweep a filled blade strip (in-plane disk dash) or stream the 8 octagon points; fade out after
+  if(dashBlade){
+    if(dashT>0) bladeSample();
+    if(blade.visible){ if(dashT<=0){ trailAlpha=Math.max(0,trailAlpha-dt/CFG.DASH_TRAIL_FADE); if(trailAlpha<=0)blade.visible=false; } buildBlade(); }
+  }else{
+    if(dashT>0) trailHeads(false);
+    if(trail.visible){ if(dashT<=0){ trailAlpha=Math.max(0,trailAlpha-dt/CFG.DASH_TRAIL_FADE); if(trailAlpha<=0)trail.visible=false; } buildTrail(); }
+  }
   camera.position.x+=(player.position.x*CFG.CAM_LEAD_X-camera.position.x)*Math.min(1,dt*CFG.CAM_DAMP);
   // vertical FOLLOW: weak while moving (orb leads, off-centre); on idle the camera slides up to re-frame the
   // orb with a LEVEL horizon (it moves the camera, it does NOT pitch the view at the orb).
@@ -701,9 +815,12 @@ function tick(now){
   camRecenter+=((aimY===0?1:0)-camRecenter)*Math.min(1,dt*CFG.CAM_RECENTER);   // ramps up once you stop moving
   const followY=followLead+(player.position.y-followLead)*camRecenter*CFG.CAM_RECENTER_AMT;
   camera.position.y+=(followY-camera.position.y)*Math.min(1,dt*CFG.CAM_DAMP);
+  if(dashT>0&&!dashFwd){ camera.position.x=camHoldX; camera.position.y=camHoldY; } // blink: camera holds, pilot darts within the frame
   // hard cap on how far the orb rides off vertical centre: near the limit the camera tracks 1:1 so the orb
-  // simply PINS at the edge (no leading-then-rebounding while you hold the stick against it)
-  camera.position.y=THREE.MathUtils.clamp(camera.position.y,player.position.y-CFG.CAM_MAX_OFFSET,player.position.y+CFG.CAM_MAX_OFFSET);
+  // simply PINS at the edge. Skipped during a blink + its recovery tail so the held camera eases back instead of snapping.
+  else if(dashRecover<=0) camera.position.y=THREE.MathUtils.clamp(camera.position.y,player.position.y-CFG.CAM_MAX_OFFSET,player.position.y+CFG.CAM_MAX_OFFSET);
+  // forward surge: dolly the camera toward the pilot's depth so it lazily reels in the gap the dive opened
+  camera.position.z+=((player.position.z+CFG.CAM_BACK)-camera.position.z)*Math.min(1,dt*CFG.DASH_CAM_CATCH);
   // PITCH: tilts with vertical input, eases back to the neutral resting aim when you let go (no orb-chasing)
   camPitch+=(aimY-camPitch)*Math.min(1,dt*((aimY!==0)?CFG.CAM_TILT_IN:CFG.CAM_TILT_OUT));
   camera.lookAt(camera.position.x, camera.position.y+CFG.CAM_LOOK_UP+camPitch*CFG.CAM_TILT, camera.position.z-CFG.CAM_LOOK_AHEAD);
