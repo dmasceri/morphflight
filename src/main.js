@@ -742,7 +742,8 @@ const DEMO=new URLSearchParams(location.search).has('demo');
 const dm={x:0,y:0,h:false,v:false,dash:false};
 const DEMO_ENVS=['forest','stalactite','channel','cave','asteroid'];
 let demoT=0,demoEnvT=0,demoEnvIx=0,demoDashClock=0,demoDashPulse=0,demoChargeT=0,weavePh=0,demoDashX=0,demoDashY=0;
-if(DEMO){ const bc=document.getElementById('bc'); if(bc)bc.style.display='none';
+if(DEMO){ document.body.classList.add('demo');
+          const bc=document.getElementById('bc'); if(bc)bc.style.display='none';
           const gp=document.getElementById('gp'); if(gp)gp.style.display='none';
           seedField(); }
 // pre-populate the approach corridor so enemies are on-screen within a frame, not seconds
@@ -787,13 +788,8 @@ function updateDemo(dt){
   let tx=amp*Math.sin(weavePh)+0.07*Math.sin(weavePh*2.3);
   let ty=amp*0.72*Math.sin(weavePh*1.6+0.6);
   tx-=px*kx; ty-=py*ky;
-  // dashes cluster in busy stretches (~2s apart), thin out in calm ones (~5.5s);
-  // direction follows the morph / environment's open axis (locked at trigger)
-  const dashInterval=5.5-3.5*energy;
-  demoDashClock+=dt;
-  if(demoDashClock>=dashInterval){ demoDashClock=0; demoDashPulse=0.16;
-    const dv=demoDashVec(); demoDashX=dv.x; demoDashY=dv.y; }
-  if(demoDashPulse>0){ demoDashPulse-=dt; tx=demoDashX; ty=demoDashY; dm.dash=true; } else dm.dash=false;
+  // dash disabled in the demo for now (didn't read well) — pure weave + morph
+  dm.dash=false;
   dm.x=THREE.MathUtils.clamp(tx,-1,1);
   dm.y=THREE.MathUtils.clamp(ty,-1,1);
   // occasional charge nova for flair
