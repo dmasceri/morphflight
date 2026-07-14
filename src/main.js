@@ -797,7 +797,7 @@ function updateDemo(dt){
   // environments run a bit longer now; snap toward center on the cut so a tighter
   // next environment doesn't start us against a wall
   demoEnvT+=dt;
-  if(demoEnvT>4.5){ demoEnvT=0; demoEnvIx=(demoEnvIx+1)%DEMO_ENVS.length; setEnv(DEMO_ENVS[demoEnvIx]);
+  if(demoEnvT>6.0){ demoEnvT=0; demoEnvIx=(demoEnvIx+1)%DEMO_ENVS.length; setEnv(DEMO_ENVS[demoEnvIx]);
     player.position.x*=0.3; player.position.y*=0.3; }
 }
 
