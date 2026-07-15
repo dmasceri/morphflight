@@ -745,7 +745,10 @@ let demoT=0,demoEnvT=0,demoEnvIx=0,demoDashClock=0,demoDashPulse=0,demoChargeT=0
 if(DEMO){ document.body.classList.add('demo');
           const bc=document.getElementById('bc'); if(bc)bc.style.display='none';
           const gp=document.getElementById('gp'); if(gp)gp.style.display='none';
-          seedField(); }
+          seedField();
+          // lets a capture align the env cycle to the start of the recording (all five, in order)
+          window.__demoRestart=function(){ demoT=0; weavePh=0; demoEnvT=0; demoEnvIx=0; demoChargeT=0;
+            player.position.set(0,0,0); setEnv(DEMO_ENVS[0]); }; }
 // pre-populate the approach corridor so enemies are on-screen within a frame, not seconds
 function spawnWaveAt(kind,z){
   if(kind==='row'){ for(let i=-5;i<=5;i++) spawnEnemy(i*2.8,0,z,'row'); }
